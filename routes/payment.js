@@ -1,121 +1,208 @@
 const express = require('express');
-const Razorpay = require('razorpay');
-const crypto = require('crypto');
+const { Cashfree, CFEnvironment } = require('cashfree-pg');
 const Token = require('../models/Token');
 
 const router = express.Router();
 
-// Razorpay Instance Setup
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
+// =====================================================
+// Cashfree Instance Setup
+// =====================================================
+Cashfree.XClientId = process.env.CASHFREE_APP_ID;
+Cashfree.XClientSecret = process.env.CASHFREE_SECRET_KEY;
+Cashfree.XEnvironment =
+  process.env.CASHFREE_ENV === 'production'
+    ? CFEnvironment.PRODUCTION
+    : CFEnvironment.SANDBOX;
+
+const CF_API_VERSION = '2023-08-01';
+const FRONTEND_URL =
+  process.env.FRONTEND_URL || 'https://ganesh-frontend-1.onrender.com';
 
 // =====================================================
-// STEP 1 & 2: Generate Token and Razorpay Order
+// Helper: build the WhatsApp confirmation link
+// =====================================================
+function buildWhatsappUrl(token) {
+  let cleanPhone = String(token.phone).replace(/\D/g, '');
+  if (!cleanPhone.startsWith('91') && cleanPhone.length === 10) {
+    cleanPhone = '91' + cleanPhone;
+  }
+
+  const text =
+    `🪔 *Ganesh Chaturthi Token Confirmation* 🪔\n\n` +
+    `*Name:* ${token.name}\n` +
+    `*Token No:* ${token.tokenNo}\n` +
+    `*Phone:* ${token.phone}\n` +
+    `*Payment Paid:* ₹20 (Confirmed)\n` +
+    `*Payment ID:* ${token.paymentId}\n\n` +
+    `Blessings to you and your family! 🙏`;
+
+  return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
+}
+
+// =====================================================
+// STEP 1 & 2: Generate Token + Create Cashfree Order
 // =====================================================
 router.post('/token/create', async (req, res) => {
   try {
     const { name, phone } = req.body;
 
     if (!name || !phone) {
-      return res.status(400).json({ success: false, error: 'Name and phone required' });
+      return res
+        .status(400)
+        .json({ success: false, error: 'Name and phone required' });
     }
 
-    // Generate unique Token ID
+    const cleanPhone = String(phone).replace(/\D/g, '');
+    if (cleanPhone.length !== 10) {
+      return res
+        .status(400)
+        .json({ success: false, error: 'Enter a valid 10-digit phone number' });
+    }
+
+    // Unique token number
     const tokenNo = 'GANESH-' + Math.floor(100000 + Math.random() * 900000);
 
-    // Create ₹20 Order in Razorpay (Amount in Paise: 20 * 100 = 2000)
-    const options = {
-      amount: 2000,
-      currency: 'INR',
-      receipt: `receipt_${tokenNo}`,
+    // Unique Cashfree order id (max 50 chars, alphanumeric + - _ )
+    const orderId = `${tokenNo}-${Date.now()}`;
+
+    const request = {
+      order_amount: 20.0, // ⚠️ Cashfree uses RUPEES, not paise
+      order_currency: 'INR',
+      order_id: orderId,
+      customer_details: {
+        customer_id: `cust_${cleanPhone}_${Date.now()}`,
+        customer_name: name,
+        customer_phone: cleanPhone,
+      },
+      order_meta: {
+        return_url: `${FRONTEND_URL}/?order_id={order_id}`,
+      },
+      order_note: 'Ganesh Chaturthi Token Fee ₹20',
     };
-    const order = await razorpay.orders.create(options);
+
+    const response = await Cashfree.PGCreateOrder(CF_API_VERSION, request);
+    const orderData = response.data;
 
     // Save pending entry to DB
     const newToken = new Token({
       name,
-      phone,
+      phone: cleanPhone,
       tokenNo,
-      orderId: order.id,
-      status: 'PENDING'
+      orderId: orderData.order_id,
+      status: 'PENDING',
     });
     await newToken.save();
 
-    res.json({
+    return res.json({
       success: true,
-      orderId: order.id,
-      amount: order.amount,
+      orderId: orderData.order_id,
+      paymentSessionId: orderData.payment_session_id,
+      amount: 20,
       tokenNo,
-      keyId: process.env.RAZORPAY_KEY_ID
+      appId: process.env.CASHFREE_APP_ID,
+      mode: process.env.CASHFREE_ENV === 'production' ? 'production' : 'sandbox',
     });
   } catch (err) {
-    console.error('Order creation error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    console.error(
+      'Order creation error:',
+      err?.response?.data || err.message || err
+    );
+    return res.status(500).json({
+      success: false,
+      error:
+        err?.response?.data?.message || err.message || 'Order creation failed',
+    });
   }
 });
 
 // =====================================================
 // STEP 5 & 6: Verify Payment Authenticity
+// (Server-side fetch of the order status from Cashfree)
 // =====================================================
 router.post('/payment/verify', async (req, res) => {
   try {
-    const {
-      razorpay_order_id,
-      razorpay_payment_id,
-      razorpay_signature,
-      tokenNo
-    } = req.body;
+    const { orderId, tokenNo } = req.body;
 
-    // Cryptographic Signature Verification
-    const body = razorpay_order_id + "|" + razorpay_payment_id;
-    const expectedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-      .update(body.toString())
-      .digest('hex');
+    if (!orderId || !tokenNo) {
+      return res
+        .status(400)
+        .json({ success: false, message: 'orderId and tokenNo required' });
+    }
 
-    if (expectedSignature === razorpay_signature) {
-      // Payment Verified! Update Database
+    // Fetch live order status from Cashfree
+    const response = await Cashfree.PGFetchOrder(CF_API_VERSION, orderId);
+    const order = response.data;
+    const status = String(order.order_status || '').toUpperCase();
+
+    // ---------- PAID ----------
+    if (status === 'PAID') {
+      // Try to get the real Cashfree payment id
+      let paymentId = String(order.cf_order_id || orderId);
+      try {
+        const payRes = await Cashfree.PGOrderFetchPayments(
+          CF_API_VERSION,
+          orderId
+        );
+        const payments = Array.isArray(payRes.data) ? payRes.data : [];
+        const successPayment = payments.find(
+          (p) => String(p.payment_status || '').toUpperCase() === 'SUCCESS'
+        );
+        if (successPayment && successPayment.cf_payment_id) {
+          paymentId = String(successPayment.cf_payment_id);
+        }
+      } catch (payErr) {
+        console.warn(
+          'Could not fetch payment list, using order id:',
+          payErr?.response?.data || payErr.message
+        );
+      }
+
       const updatedToken = await Token.findOneAndUpdate(
         { tokenNo },
-        { status: 'SUCCESS', paymentId: razorpay_payment_id },
+        { status: 'SUCCESS', paymentId },
         { new: true }
       );
 
       if (!updatedToken) {
-        return res.status(404).json({ success: false, message: 'Token not found' });
+        return res
+          .status(404)
+          .json({ success: false, message: 'Token not found' });
       }
-
-      // Clean phone number format for WhatsApp (e.g., 919876543210)
-      let cleanPhone = updatedToken.phone.replace(/\D/g, '');
-      if (!cleanPhone.startsWith('91') && cleanPhone.length === 10) {
-        cleanPhone = '91' + cleanPhone;
-      }
-
-      // Generate WhatsApp Text
-      const text =
-        `🪔 *Ganesh Chaturthi Token Confirmation* 🪔\n\n` +
-        `*Name:* ${updatedToken.name}\n` +
-        `*Token No:* ${updatedToken.tokenNo}\n` +
-        `*Phone:* ${updatedToken.phone}\n` +
-        `*Payment Paid:* ₹20 (Confirmed)\n` +
-        `*Payment ID:* ${updatedToken.paymentId}\n\n` +
-        `Blessings to you and your family! 🙏`;
-
-      const whatsappUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
 
       return res.json({
         success: true,
-        whatsappUrl,
-        tokenDetails: updatedToken
+        whatsappUrl: buildWhatsappUrl(updatedToken),
+        tokenDetails: updatedToken,
       });
-    } else {
-      return res.status(400).json({ success: false, message: 'Invalid Payment Signature' });
     }
+
+    // ---------- STILL PENDING ----------
+    if (status === 'ACTIVE') {
+      return res.status(202).json({
+        success: false,
+        pending: true,
+        message: 'Payment not completed yet',
+      });
+    }
+
+    // ---------- FAILED / EXPIRED / TERMINATED ----------
+    await Token.findOneAndUpdate({ tokenNo }, { status: 'FAILED' });
+
+    return res.status(400).json({
+      success: false,
+      pending: false,
+      message: `Payment ${status.toLowerCase() || 'failed'}`,
+    });
   } catch (err) {
-    console.error('Verification error:', err);
-    res.status(500).json({ success: false, error: err.message });
+    console.error(
+      'Verification error:',
+      err?.response?.data || err.message || err
+    );
+    return res.status(500).json({
+      success: false,
+      error:
+        err?.response?.data?.message || err.message || 'Verification failed',
+    });
   }
 });
 

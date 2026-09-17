@@ -7,7 +7,7 @@ const TokenSchema = new mongoose.Schema({
   orderId: { type: String, required: true },
   paymentId: { type: String, default: null },
   status: { type: String, default: 'PENDING' },
-  createdAt: { type: Date, default: Date.now }
+  createdAt: { type: Date, default: Date.now },
 });
 
 module.exports = mongoose.model('Token', TokenSchema);
