@@ -1,7 +1,7 @@
 const express = require('express');
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
-const Pass = require('../models/Pass');
+const Order = require('../models/Order');
 
 const router = express.Router();
 
@@ -14,22 +14,22 @@ const razorpay = new Razorpay({
 });
 
 // --------------------------------------------------
-// Helper: build WhatsApp confirmation link
+// Helper: build WhatsApp order confirmation link
 // --------------------------------------------------
-function buildWhatsappUrl(pass) {
-  let cleanPhone = String(pass.phone).replace(/\D/g, '');
+function buildWhatsappUrl(order) {
+  let cleanPhone = String(order.phone).replace(/\D/g, '');
   if (!cleanPhone.startsWith('91') && cleanPhone.length === 10) {
     cleanPhone = '91' + cleanPhone;
   }
 
   const text =
-    `🪔 *Ganesh Chaturthi Laddu Prasad Booking Confirmation* 🪔\n\n` +
-    `*Name:* ${pass.name}\n` +
-    `*Booking No:* ${pass.passNo}\n` +
-    `*Phone:* ${pass.phone}\n` +
+    `🪔 *Ganesh Prasad Laddu – Order Confirmation* 🪔\n\n` +
+    `*Customer Name:* ${order.name}\n` +
+    `*Order ID:* ${order.orderNo}\n` +
+    `*Phone:* ${order.phone}\n` +
     `*Amount Paid:* ₹20 (Confirmed)\n` +
-    `*Payment ID:* ${pass.paymentId}\n\n` +
-    `Please show this confirmation at the Vinayak Chaturthi Pandal counter to collect your Laddu Prasad.\n\n` +
+    `*Payment ID:* ${order.paymentId}\n\n` +
+    `Please show this Order Receipt at the Prasadam pickup counter to collect your Ganesh Prasad Laddu.\n\n` +
     `Blessings to you and your family! 🙏`;
 
   return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
@@ -50,9 +50,10 @@ router.get('/_routes', (req, res) => {
 });
 
 // =====================================================
-// POST /api/pass/create
+// POST /api/order/create
+// Creates a Razorpay order for the food product
 // =====================================================
-router.post('/pass/create', async (req, res) => {
+router.post('/order/create', async (req, res) => {
   try {
     const { name, phone } = req.body;
 
@@ -69,37 +70,41 @@ router.post('/pass/create', async (req, res) => {
         .json({ success: false, error: 'Enter a valid 10-digit phone number' });
     }
 
-    const passNo = 'LADDU-' + Math.floor(100000 + Math.random() * 900000);
+    const orderNo = 'LD-' + Math.floor(100000 + Math.random() * 900000);
 
+    // ✅ Razorpay payload uses ONLY food retail terminology
     const options = {
       amount: 2000, // ₹20 in paise
       currency: 'INR',
-      receipt: passNo,
+      receipt: orderNo,
       notes: {
-        customerName: name,
-        customerPhone: cleanPhone,
-        description: 'Laddu Prasad Booking',
+        product: 'Ganesh Prasad Laddu',
+        category: 'Food & Beverage',
+        order_ref: orderNo,
+        pickup: 'Counter Pickup',
+        customer_name: name,
+        customer_phone: cleanPhone,
       },
     };
 
-    const order = await razorpay.orders.create(options);
+    const razorpayOrder = await razorpay.orders.create(options);
 
-    const newPass = new Pass({
+    const newOrder = new Order({
       name,
       phone: cleanPhone,
-      passNo,
-      orderId: order.id,
+      orderNo,
+      razorpayOrderId: razorpayOrder.id,
       status: 'PENDING',
     });
-    await newPass.save();
+    await newOrder.save();
 
     return res.json({
       success: true,
-      order_id: order.id,
-      amount: order.amount,
-      currency: order.currency,
+      order_id: razorpayOrder.id,
+      amount: razorpayOrder.amount,
+      currency: razorpayOrder.currency,
       key_id: process.env.RAZORPAY_KEY_ID,
-      passNo,
+      orderNo,
     });
   } catch (err) {
     console.error('Order creation error:', err);
@@ -111,22 +116,23 @@ router.post('/pass/create', async (req, res) => {
 });
 
 // =====================================================
-// POST /api/pass/verify
+// POST /api/order/verify
+// Verifies the Razorpay signature and marks order SUCCESS
 // =====================================================
-router.post('/pass/verify', async (req, res) => {
+router.post('/order/verify', async (req, res) => {
   try {
     const {
       razorpay_order_id,
       razorpay_payment_id,
       razorpay_signature,
-      passNo,
+      orderNo,
     } = req.body;
 
     if (
       !razorpay_order_id ||
       !razorpay_payment_id ||
       !razorpay_signature ||
-      !passNo
+      !orderNo
     ) {
       return res
         .status(400)
@@ -140,28 +146,28 @@ router.post('/pass/verify', async (req, res) => {
       .digest('hex');
 
     if (expectedSignature !== razorpay_signature) {
-      await Pass.findOneAndUpdate({ passNo }, { status: 'FAILED' });
+      await Order.findOneAndUpdate({ orderNo }, { status: 'FAILED' });
       return res
         .status(400)
         .json({ success: false, message: 'Invalid payment signature' });
     }
 
-    const updatedPass = await Pass.findOneAndUpdate(
-      { passNo },
+    const updatedOrder = await Order.findOneAndUpdate(
+      { orderNo },
       { status: 'SUCCESS', paymentId: razorpay_payment_id },
       { new: true }
     );
 
-    if (!updatedPass) {
+    if (!updatedOrder) {
       return res
         .status(404)
-        .json({ success: false, message: 'Pass not found' });
+        .json({ success: false, message: 'Order not found' });
     }
 
     return res.json({
       success: true,
-      whatsappUrl: buildWhatsappUrl(updatedPass),
-      passDetails: updatedPass,
+      whatsappUrl: buildWhatsappUrl(updatedOrder),
+      orderDetails: updatedOrder,
     });
   } catch (err) {
     console.error('Verification error:', err);
@@ -173,20 +179,20 @@ router.post('/pass/verify', async (req, res) => {
 });
 
 // =====================================================
-// ADMIN ENDPOINTS  (inside payment router, no key)
+// ADMIN ENDPOINTS (unchanged auth model — no key)
 // =====================================================
 
-// GET /api/admin/passes  → list all passes (optional ?status=SUCCESS)
-router.get('/admin/passes', async (req, res) => {
+// GET /api/admin/orders  → list all orders (optional ?status=SUCCESS)
+router.get('/admin/orders', async (req, res) => {
   try {
     const { status } = req.query;
     const filter = {};
     if (status) filter.status = status.toUpperCase();
 
-    const passes = await Pass.find(filter).sort({ createdAt: -1 }).lean();
-    res.json({ success: true, count: passes.length, passes });
+    const orders = await Order.find(filter).sort({ createdAt: -1 }).lean();
+    res.json({ success: true, count: orders.length, orders });
   } catch (err) {
-    console.error('Admin passes error:', err);
+    console.error('Admin orders error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -194,10 +200,10 @@ router.get('/admin/passes', async (req, res) => {
 // GET /api/admin/stats  → summary counts + total amount
 router.get('/admin/stats', async (req, res) => {
   try {
-    const total = await Pass.countDocuments();
-    const success = await Pass.countDocuments({ status: 'SUCCESS' });
-    const pending = await Pass.countDocuments({ status: 'PENDING' });
-    const failed = await Pass.countDocuments({ status: 'FAILED' });
+    const total = await Order.countDocuments();
+    const success = await Order.countDocuments({ status: 'SUCCESS' });
+    const pending = await Order.countDocuments({ status: 'PENDING' });
+    const failed = await Order.countDocuments({ status: 'FAILED' });
     const totalAmount = success * 20;
 
     res.json({
@@ -210,31 +216,31 @@ router.get('/admin/stats', async (req, res) => {
   }
 });
 
-// GET /api/admin/pass/:passNo  → single pass lookup
-router.get('/admin/pass/:passNo', async (req, res) => {
+// GET /api/admin/order/:orderNo  → single order lookup
+router.get('/admin/order/:orderNo', async (req, res) => {
   try {
-    const pass = await Pass.findOne({ passNo: req.params.passNo }).lean();
-    if (!pass) {
+    const order = await Order.findOne({ orderNo: req.params.orderNo }).lean();
+    if (!order) {
       return res
         .status(404)
-        .json({ success: false, error: 'Pass not found' });
+        .json({ success: false, error: 'Order not found' });
     }
-    res.json({ success: true, pass });
+    res.json({ success: true, order });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// DELETE /api/admin/pass/:passNo  → delete a pass
-router.delete('/admin/pass/:passNo', async (req, res) => {
+// DELETE /api/admin/order/:orderNo  → delete an order
+router.delete('/admin/order/:orderNo', async (req, res) => {
   try {
-    const deleted = await Pass.findOneAndDelete({
-      passNo: req.params.passNo,
+    const deleted = await Order.findOneAndDelete({
+      orderNo: req.params.orderNo,
     });
     if (!deleted) {
       return res
         .status(404)
-        .json({ success: false, error: 'Pass not found' });
+        .json({ success: false, error: 'Order not found' });
     }
     res.json({ success: true, deleted });
   } catch (err) {
