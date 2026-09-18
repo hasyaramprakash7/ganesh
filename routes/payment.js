@@ -36,6 +36,20 @@ function buildWhatsappUrl(pass) {
 }
 
 // =====================================================
+// DIAGNOSTIC — list all routes registered on this router
+// GET /api/_routes
+// =====================================================
+router.get('/_routes', (req, res) => {
+  const routes = router.stack
+    .filter((layer) => layer.route)
+    .map((layer) => ({
+      method: Object.keys(layer.route.methods)[0].toUpperCase(),
+      path: '/api' + layer.route.path,
+    }));
+  res.json({ success: true, count: routes.length, routes });
+});
+
+// =====================================================
 // POST /api/pass/create
 // =====================================================
 router.post('/pass/create', async (req, res) => {
@@ -159,7 +173,7 @@ router.post('/pass/verify', async (req, res) => {
 });
 
 // =====================================================
-// ADMIN APIs (no key — same style as user APIs)
+// ADMIN ENDPOINTS  (inside payment router, no key)
 // =====================================================
 
 // GET /api/admin/passes  → list all passes (optional ?status=SUCCESS)
@@ -177,7 +191,7 @@ router.get('/admin/passes', async (req, res) => {
   }
 });
 
-// GET /api/admin/stats  → summary counts + amount
+// GET /api/admin/stats  → summary counts + total amount
 router.get('/admin/stats', async (req, res) => {
   try {
     const total = await Pass.countDocuments();

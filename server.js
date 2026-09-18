@@ -14,8 +14,10 @@ app.use(
   cors({
     origin: [
       'https://ganesh-frontend-1.onrender.com',
+      'https://ganesh-frontend.onrender.com',
       'http://localhost:3000',
       'http://localhost:5173',
+      '*',
     ],
     credentials: true,
   })
@@ -33,6 +35,19 @@ app.get('/', (req, res) => {
 // Routes
 // --------------------------------------------------
 app.use('/api', paymentRoutes);
+
+// --------------------------------------------------
+// 404 handler (helps debugging missing routes)
+// --------------------------------------------------
+app.use((req, res) => {
+  console.log('❌ 404 —', req.method, req.originalUrl);
+  res.status(404).json({
+    success: false,
+    error: 'Route not found',
+    method: req.method,
+    url: req.originalUrl,
+  });
+});
 
 // --------------------------------------------------
 // MongoDB Connection
