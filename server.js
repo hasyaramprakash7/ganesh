@@ -23,7 +23,7 @@ app.use(
 app.use(express.json());
 
 // --------------------------------------------------
-// Health check (also used by frontend warm-up ping)
+// Health check
 // --------------------------------------------------
 app.get('/', (req, res) => {
   res.json({ status: 'Backend running ✅' });
