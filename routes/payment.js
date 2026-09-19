@@ -23,14 +23,14 @@ function buildWhatsappUrl(order) {
   }
 
   const text =
-    `🪔 *Ganesh Prasad Laddu – Order Confirmation* 🪔\n\n` +
+    `🛒 *Laddu – Order Confirmation* 🛒\n\n` +
     `*Customer Name:* ${order.name}\n` +
     `*Order ID:* ${order.orderNo}\n` +
     `*Phone:* ${order.phone}\n` +
     `*Amount Paid:* ₹20 (Confirmed)\n` +
     `*Payment ID:* ${order.paymentId}\n\n` +
-    `Please show this Order Receipt at the Prasadam pickup counter to collect your Ganesh Prasad Laddu.\n\n` +
-    `Blessings to you and your family! 🙏`;
+    `Please show this Order Receipt at our pickup counter to collect your Laddu.\n\n` +
+    `Thank you for your order!`;
 
   return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
 }
@@ -72,13 +72,13 @@ router.post('/order/create', async (req, res) => {
 
     const orderNo = 'LD-' + Math.floor(100000 + Math.random() * 900000);
 
-    // ✅ Razorpay payload uses ONLY food retail terminology
+    // ✅ Only food retail terminology
     const options = {
       amount: 2000, // ₹20 in paise
       currency: 'INR',
       receipt: orderNo,
       notes: {
-        product: 'Ganesh Prasad Laddu',
+        product: 'Laddu',
         category: 'Food & Beverage',
         order_ref: orderNo,
         pickup: 'Counter Pickup',
@@ -117,7 +117,6 @@ router.post('/order/create', async (req, res) => {
 
 // =====================================================
 // POST /api/order/verify
-// Verifies the Razorpay signature and marks order SUCCESS
 // =====================================================
 router.post('/order/verify', async (req, res) => {
   try {
@@ -179,10 +178,8 @@ router.post('/order/verify', async (req, res) => {
 });
 
 // =====================================================
-// ADMIN ENDPOINTS (unchanged auth model — no key)
+// ADMIN ENDPOINTS
 // =====================================================
-
-// GET /api/admin/orders  → list all orders (optional ?status=SUCCESS)
 router.get('/admin/orders', async (req, res) => {
   try {
     const { status } = req.query;
@@ -197,7 +194,6 @@ router.get('/admin/orders', async (req, res) => {
   }
 });
 
-// GET /api/admin/stats  → summary counts + total amount
 router.get('/admin/stats', async (req, res) => {
   try {
     const total = await Order.countDocuments();
@@ -216,7 +212,6 @@ router.get('/admin/stats', async (req, res) => {
   }
 });
 
-// GET /api/admin/order/:orderNo  → single order lookup
 router.get('/admin/order/:orderNo', async (req, res) => {
   try {
     const order = await Order.findOne({ orderNo: req.params.orderNo }).lean();
@@ -231,7 +226,6 @@ router.get('/admin/order/:orderNo', async (req, res) => {
   }
 });
 
-// DELETE /api/admin/order/:orderNo  → delete an order
 router.delete('/admin/order/:orderNo', async (req, res) => {
   try {
     const deleted = await Order.findOneAndDelete({
