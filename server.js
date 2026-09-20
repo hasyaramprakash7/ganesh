@@ -18,31 +18,37 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: function (origin, callback) {
-      // allow server-to-server / curl / Postman (no origin)
       if (!origin) return callback(null, true);
-
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      }
-
+      if (allowedOrigins.includes(origin)) return callback(null, true);
       console.log('❌ CORS blocked origin:', origin);
       return callback(new Error('Not allowed by CORS: ' + origin));
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-razorpay-signature'],
   })
 );
 
-// ✅ Handle preflight for all routes
 app.options('*', cors());
 
+// =====================================================
+// ⚠️ WEBHOOK MUST BE MOUNTED BEFORE express.json()
+// because Razorpay sends a raw body that we must hash.
+// =====================================================
+app.use(
+  '/api/webhook',
+  express.raw({ type: 'application/json' }),
+  paymentRoutes
+);
+
+// Normal JSON parser for everything else
 app.use(express.json());
 
 app.get('/', (req, res) => {
   res.json({ status: 'Backend running ✅' });
 });
 
+// All other API routes
 app.use('/api', paymentRoutes);
 
 app.use((req, res) => {
