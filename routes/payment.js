@@ -27,7 +27,7 @@ function buildWhatsappUrl(order) {
     `*Customer Name:* ${order.name}\n` +
     `*Order ID:* ${order.orderNo}\n` +
     `*Phone:* ${order.phone}\n` +
-    `*Amount Paid:* ₹20 (Confirmed)\n` +
+    `*Amount Paid:* ₹21 (Confirmed)\n` +
     `*Payment ID:* ${order.paymentId}\n\n` +
     `Please show this Order Receipt at our pickup counter to collect your Laddu.\n\n` +
     `Thank you for your order!`;
@@ -74,7 +74,7 @@ router.post('/order/create', async (req, res) => {
 
     // ✅ Only food retail terminology
     const options = {
-      amount: 2000, // ₹20 in paise
+      amount: 2100, // ₹21 in paise
       currency: 'INR',
       receipt: orderNo,
       notes: {
@@ -200,7 +200,7 @@ router.get('/admin/stats', async (req, res) => {
     const success = await Order.countDocuments({ status: 'SUCCESS' });
     const pending = await Order.countDocuments({ status: 'PENDING' });
     const failed = await Order.countDocuments({ status: 'FAILED' });
-    const totalAmount = success * 20;
+    const totalAmount = success * 21;
 
     res.json({
       success: true,
