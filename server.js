@@ -10,7 +10,7 @@ const app = express();
 app.use(
   cors({
     origin: [
-      'https://ganesh-frontend-1.onrender.com',
+      'https://list-ganesh.onrender.com/',
       'https://laddu-6i69.onrender.com',
       'http://localhost:3000',
       'http://localhost:5173',
