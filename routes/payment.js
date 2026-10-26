@@ -14,7 +14,7 @@ const razorpay = new Razorpay({
 });
 
 // =====================================================
-// PROJECT CONFIGURATION
+// PROJECT DATA
 // 🔴 CHANGE THESE GITHUB LINKS TO YOUR ACTUAL REPOSITORIES
 // =====================================================
 const PROJECTS = {
@@ -41,49 +41,30 @@ const PROJECTS = {
 };
 
 // =====================================================
-// DIAGNOSTIC — list all routes registered on this router
-// GET /api/_routes
-// =====================================================
-router.get('/_routes', (req, res) => {
-  const routes = router.stack
-    .filter((layer) => layer.route)
-    .map((layer) => ({
-      method: Object.keys(layer.route.methods)[0].toUpperCase(),
-      path: '/api' + layer.route.path,
-    }));
-  res.json({ success: true, count: routes.length, routes });
-});
-
-// =====================================================
 // POST /api/order/create
-// Creates a Razorpay order for the selected AI Project
+// Creates a Razorpay order for ₹1 and saves to DB
 // =====================================================
 router.post('/order/create', async (req, res) => {
   try {
     const { name, phone, projectId } = req.body;
 
     if (!name || !phone || !projectId) {
-      return res
-        .status(400)
-        .json({ success: false, error: 'Name, phone, and projectId required' });
+      return res.status(400).json({ success: false, error: 'Name, phone, and projectId are required' });
     }
 
     const cleanPhone = String(phone).replace(/\D/g, '');
     if (cleanPhone.length !== 10) {
-      return res
-        .status(400)
-        .json({ success: false, error: 'Enter a valid 10-digit phone number' });
+      return res.status(400).json({ success: false, error: 'Enter a valid 10-digit phone number' });
     }
 
     const project = PROJECTS[projectId];
     if (!project) {
-      return res
-        .status(400)
-        .json({ success: false, error: 'Invalid project selected' });
+      return res.status(400).json({ success: false, error: 'Invalid project selected' });
     }
 
     const orderNo = 'PRJ-' + Math.floor(100000 + Math.random() * 900000);
 
+    // Create order on Razorpay
     const options = {
       amount: 100, // ₹1 in paise
       currency: 'INR',
@@ -98,14 +79,15 @@ router.post('/order/create', async (req, res) => {
 
     const razorpayOrder = await razorpay.orders.create(options);
 
+    // Save to MongoDB (Status starts as PENDING)
     const newOrder = new Order({
       name,
       phone: cleanPhone,
       orderNo,
       razorpayOrderId: razorpayOrder.id,
-      projectId: projectId,
+      projectId,
       projectName: project.name,
-      githubLink: project.github, // Stored securely in DB, only sent after payment
+      githubLink: project.github, // Link securely stored
       amount: 1,
       status: 'PENDING',
     });
@@ -121,38 +103,23 @@ router.post('/order/create', async (req, res) => {
     });
   } catch (err) {
     console.error('Order creation error:', err);
-    return res.status(500).json({
-      success: false,
-      error: err.message || 'Order creation failed',
-    });
+    return res.status(500).json({ success: false, error: 'Order creation failed' });
   }
 });
 
 // =====================================================
 // POST /api/order/verify
-// Called by frontend after Razorpay checkout success.
-// Returns the GitHub link ONLY if payment is verified.
+// Verifies payment and flips DB status to SUCCESS
 // =====================================================
 router.post('/order/verify', async (req, res) => {
   try {
-    const {
-      razorpay_order_id,
-      razorpay_payment_id,
-      razorpay_signature,
-      orderNo,
-    } = req.body;
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, orderNo } = req.body;
 
-    if (
-      !razorpay_order_id ||
-      !razorpay_payment_id ||
-      !razorpay_signature ||
-      !orderNo
-    ) {
-      return res
-        .status(400)
-        .json({ success: false, message: 'Missing required parameters' });
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !orderNo) {
+      return res.status(400).json({ success: false, message: 'Missing required parameters' });
     }
 
+    // Verify Signature
     const body = razorpay_order_id + '|' + razorpay_payment_id;
     const expectedSignature = crypto
       .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
@@ -161,11 +128,10 @@ router.post('/order/verify', async (req, res) => {
 
     if (expectedSignature !== razorpay_signature) {
       await Order.findOneAndUpdate({ orderNo }, { status: 'FAILED' });
-      return res
-        .status(400)
-        .json({ success: false, message: 'Invalid payment signature' });
+      return res.status(400).json({ success: false, message: 'Invalid payment signature' });
     }
 
+    // 🟢 PAYMENT SUCCESS: Update DB
     const updatedOrder = await Order.findOneAndUpdate(
       { orderNo },
       { status: 'SUCCESS', paymentId: razorpay_payment_id },
@@ -173,12 +139,10 @@ router.post('/order/verify', async (req, res) => {
     );
 
     if (!updatedOrder) {
-      return res
-        .status(404)
-        .json({ success: false, message: 'Order not found' });
+      return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    // Success! Send back the specific GitHub link
+    // Send the GitHub Link back to the frontend ONLY after success
     return res.json({
       success: true,
       projectName: updatedOrder.projectName,
@@ -187,28 +151,21 @@ router.post('/order/verify', async (req, res) => {
     });
   } catch (err) {
     console.error('Verification error:', err);
-    return res.status(500).json({
-      success: false,
-      error: err.message || 'Verification failed',
-    });
+    return res.status(500).json({ success: false, error: 'Verification failed' });
   }
 });
 
 // =====================================================
 // POST /api/webhook/razorpay
-// Razorpay server → your server. Works even if the
-// browser died before /order/verify was called.
+// 🔥 IMPORTANT: This catches the payment on the server
+// side even if the user closes the browser before verification.
 // =====================================================
 router.post('/razorpay', async (req, res) => {
   try {
     const signature = req.headers['x-razorpay-signature'];
-    if (!signature) {
-      return res.status(400).send('Missing signature');
-    }
+    if (!signature) return res.status(400).send('Missing signature');
 
-    const rawBody = Buffer.isBuffer(req.body)
-      ? req.body
-      : Buffer.from(JSON.stringify(req.body));
+    const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body));
 
     const expected = crypto
       .createHmac('sha256', process.env.RAZORPAY_WEBHOOK_SECRET)
@@ -223,6 +180,7 @@ router.post('/razorpay', async (req, res) => {
     const event = JSON.parse(rawBody.toString());
     console.log('🔔 Razorpay webhook:', event.event);
 
+    // When payment is captured, update DB to SUCCESS
     if (event.event === 'payment.captured' || event.event === 'order.paid') {
       const payment = event.payload.payment.entity;
       const rzpOrderId = payment.order_id;
@@ -233,9 +191,10 @@ router.post('/razorpay', async (req, res) => {
         { status: 'SUCCESS', paymentId },
         { new: true }
       );
+      
       console.log(
         updated
-          ? `✅ Webhook: Order ${updated.orderNo} → SUCCESS`
+          ? `✅ Webhook: Order ${updated.orderNo} → SUCCESS (Project: ${updated.projectName})`
           : `⚠️ Webhook: No order found for ${rzpOrderId}`
       );
     }
@@ -260,7 +219,7 @@ router.post('/razorpay', async (req, res) => {
 // ADMIN ENDPOINTS
 // =====================================================
 
-// GET /api/admin/orders?status=SUCCESS
+// GET /api/admin/orders
 router.get('/admin/orders', async (req, res) => {
   try {
     const { status } = req.query;
@@ -270,7 +229,6 @@ router.get('/admin/orders', async (req, res) => {
     const orders = await Order.find(filter).sort({ createdAt: -1 }).lean();
     res.json({ success: true, count: orders.length, orders });
   } catch (err) {
-    console.error('Admin orders error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -283,7 +241,7 @@ router.get('/admin/stats', async (req, res) => {
     const pending = await Order.countDocuments({ status: 'PENDING' });
     const failed = await Order.countDocuments({ status: 'FAILED' });
     
-    // Calculate total revenue (₹1 per successful order)
+    // Collected is ₹1 per successful order
     const totalAmount = success * 1; 
 
     res.json({
@@ -291,14 +249,12 @@ router.get('/admin/stats', async (req, res) => {
       stats: { total, success, pending, failed, totalAmount },
     });
   } catch (err) {
-    console.error('Admin stats error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
 // GET /api/admin/sync-pending
-// Asks Razorpay for each PENDING order's real status
-// and flips it to SUCCESS if it was actually captured.
+// A manual button you can hit to check Razorpay for pending orders
 router.get('/admin/sync-pending', async (req, res) => {
   try {
     const pending = await Order.find({ status: 'PENDING' });
@@ -307,12 +263,8 @@ router.get('/admin/sync-pending', async (req, res) => {
 
     for (const o of pending) {
       try {
-        const payments = await razorpay.orders.fetchPayments(
-          o.razorpayOrderId
-        );
-        const paid = (payments.items || []).find(
-          (p) => p.status === 'captured'
-        );
+        const payments = await razorpay.orders.fetchPayments(o.razorpayOrderId);
+        const paid = (payments.items || []).find((p) => p.status === 'captured');
         if (paid) {
           o.status = 'SUCCESS';
           o.paymentId = paid.id;
@@ -325,45 +277,7 @@ router.get('/admin/sync-pending', async (req, res) => {
       }
     }
 
-    res.json({
-      success: true,
-      checked: pending.length,
-      fixed,
-      details,
-    });
-  } catch (err) {
-    console.error('Sync pending error:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// GET /api/admin/order/:orderNo
-router.get('/admin/order/:orderNo', async (req, res) => {
-  try {
-    const order = await Order.findOne({ orderNo: req.params.orderNo }).lean();
-    if (!order) {
-      return res
-        .status(404)
-        .json({ success: false, error: 'Order not found' });
-    }
-    res.json({ success: true, order });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// DELETE /api/admin/order/:orderNo
-router.delete('/admin/order/:orderNo', async (req, res) => {
-  try {
-    const deleted = await Order.findOneAndDelete({
-      orderNo: req.params.orderNo,
-    });
-    if (!deleted) {
-      return res
-        .status(404)
-        .json({ success: false, error: 'Order not found' });
-    }
-    res.json({ success: true, deleted });
+    res.json({ success: true, checked: pending.length, fixed, details });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
