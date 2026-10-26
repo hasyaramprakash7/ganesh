@@ -13,27 +13,32 @@ const razorpay = new Razorpay({
   key_secret: process.env.RAZORPAY_KEY_SECRET,
 });
 
-// --------------------------------------------------
-// Helper: build WhatsApp order confirmation link
-// --------------------------------------------------
-function buildWhatsappUrl(order) {
-  let cleanPhone = String(order.phone).replace(/\D/g, '');
-  if (!cleanPhone.startsWith('91') && cleanPhone.length === 10) {
-    cleanPhone = '91' + cleanPhone;
+// =====================================================
+// PROJECT CONFIGURATION
+// 🔴 CHANGE THESE GITHUB LINKS TO YOUR ACTUAL REPOSITORIES
+// =====================================================
+const PROJECTS = {
+  'ai-chat': { 
+    name: 'Full Stack AI Chatbot', 
+    github: 'https://github.com/yourname/ai-chatbot' 
+  },
+  'data-viz': { 
+    name: 'Data Science Dashboard', 
+    github: 'https://github.com/yourname/data-dashboard' 
+  },
+  'gen-ai': { 
+    name: 'Generative AI Image App', 
+    github: 'https://github.com/yourname/gen-ai-app' 
+  },
+  'java-spring': { 
+    name: 'Java Spring Boot AI API', 
+    github: 'https://github.com/yourname/java-ai-api' 
+  },
+  'auto-agent': { 
+    name: 'Autonomous AI Agent', 
+    github: 'https://github.com/yourname/auto-agent' 
   }
-
-  const text =
-    `🛒 *Laddu – Order Confirmation* 🛒\n\n` +
-    `*Customer Name:* ${order.name}\n` +
-    `*Order ID:* ${order.orderNo}\n` +
-    `*Phone:* ${order.phone}\n` +
-    `*Amount Paid:* ₹21 (Confirmed)\n` +
-    `*Payment ID:* ${order.paymentId}\n\n` +
-    `Please show this Order Receipt at our pickup counter to collect your Laddu.\n\n` +
-    `Thank you for your order!`;
-
-  return `https://wa.me/${cleanPhone}?text=${encodeURIComponent(text)}`;
-}
+};
 
 // =====================================================
 // DIAGNOSTIC — list all routes registered on this router
@@ -51,16 +56,16 @@ router.get('/_routes', (req, res) => {
 
 // =====================================================
 // POST /api/order/create
-// Creates a Razorpay order for the food product
+// Creates a Razorpay order for the selected AI Project
 // =====================================================
 router.post('/order/create', async (req, res) => {
   try {
-    const { name, phone } = req.body;
+    const { name, phone, projectId } = req.body;
 
-    if (!name || !phone) {
+    if (!name || !phone || !projectId) {
       return res
         .status(400)
-        .json({ success: false, error: 'Name and phone required' });
+        .json({ success: false, error: 'Name, phone, and projectId required' });
     }
 
     const cleanPhone = String(phone).replace(/\D/g, '');
@@ -70,17 +75,22 @@ router.post('/order/create', async (req, res) => {
         .json({ success: false, error: 'Enter a valid 10-digit phone number' });
     }
 
-    const orderNo = 'LD-' + Math.floor(100000 + Math.random() * 900000);
+    const project = PROJECTS[projectId];
+    if (!project) {
+      return res
+        .status(400)
+        .json({ success: false, error: 'Invalid project selected' });
+    }
+
+    const orderNo = 'PRJ-' + Math.floor(100000 + Math.random() * 900000);
 
     const options = {
-      amount: 2100, // ₹21 in paise
+      amount: 100, // ₹1 in paise
       currency: 'INR',
       receipt: orderNo,
       notes: {
-        product: 'Laddu',
-        category: 'Food & Beverage',
-        order_ref: orderNo,
-        pickup: 'Counter Pickup',
+        projectId,
+        projectName: project.name,
         customer_name: name,
         customer_phone: cleanPhone,
       },
@@ -93,6 +103,10 @@ router.post('/order/create', async (req, res) => {
       phone: cleanPhone,
       orderNo,
       razorpayOrderId: razorpayOrder.id,
+      projectId: projectId,
+      projectName: project.name,
+      githubLink: project.github, // Stored securely in DB, only sent after payment
+      amount: 1,
       status: 'PENDING',
     });
     await newOrder.save();
@@ -116,7 +130,8 @@ router.post('/order/create', async (req, res) => {
 
 // =====================================================
 // POST /api/order/verify
-// Called by frontend after Razorpay checkout success
+// Called by frontend after Razorpay checkout success.
+// Returns the GitHub link ONLY if payment is verified.
 // =====================================================
 router.post('/order/verify', async (req, res) => {
   try {
@@ -163,9 +178,11 @@ router.post('/order/verify', async (req, res) => {
         .json({ success: false, message: 'Order not found' });
     }
 
+    // Success! Send back the specific GitHub link
     return res.json({
       success: true,
-      whatsappUrl: buildWhatsappUrl(updatedOrder),
+      projectName: updatedOrder.projectName,
+      githubLink: updatedOrder.githubLink,
       orderDetails: updatedOrder,
     });
   } catch (err) {
@@ -181,8 +198,6 @@ router.post('/order/verify', async (req, res) => {
 // POST /api/webhook/razorpay
 // Razorpay server → your server. Works even if the
 // browser died before /order/verify was called.
-// NOTE: mounted in server.js with express.raw() so
-// req.body is a Buffer.
 // =====================================================
 router.post('/razorpay', async (req, res) => {
   try {
@@ -191,7 +206,6 @@ router.post('/razorpay', async (req, res) => {
       return res.status(400).send('Missing signature');
     }
 
-    // req.body is a raw Buffer here (see server.js mount)
     const rawBody = Buffer.isBuffer(req.body)
       ? req.body
       : Buffer.from(JSON.stringify(req.body));
@@ -268,7 +282,9 @@ router.get('/admin/stats', async (req, res) => {
     const success = await Order.countDocuments({ status: 'SUCCESS' });
     const pending = await Order.countDocuments({ status: 'PENDING' });
     const failed = await Order.countDocuments({ status: 'FAILED' });
-    const totalAmount = success * 21;
+    
+    // Calculate total revenue (₹1 per successful order)
+    const totalAmount = success * 1; 
 
     res.json({
       success: true,
