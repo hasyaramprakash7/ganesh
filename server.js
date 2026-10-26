@@ -11,7 +11,7 @@ const app = express();
 const allowedOrigins = [
   'https://list-ganesh.onrender.com',
   'https://laddu-6i69.onrender.com',
-  'http://localhost:3000',
+  'http://localhost:3001',
   'http://localhost:5173',
 ];
 
